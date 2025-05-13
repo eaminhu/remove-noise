@@ -47,6 +47,8 @@ pip install -r requirements.txt
 
 ```bash
 python process_images.py --input_dir "input_folder" --output_dir "output_folder" [options]
+
+python3 image_processor.py index.jpg --output processed_index.jpg --debug
 ```
 
 ### 参数说明

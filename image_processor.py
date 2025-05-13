@@ -139,7 +139,92 @@ def enhanced_noise_removal(image):
     
     # Remove these edge spots (don't worry about text preservation here)
     result[edge_spots > 0] = clean_bg[edge_spots > 0]
+
+    # --- 强力清理顶部黑色色块（保留文字）---
+    top_height = int(result.shape[0] * 0.12)
+    gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
     
+    # 检测顶部文字区域（使用自适应阈值更好地检测文字）
+    text_thresh = cv2.adaptiveThreshold(gray[:top_height, :], 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY_INV, 11, 2)
+    
+    # 找到文字轮廓
+    text_contours, _ = cv2.findContours(text_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # 创建文字保护掩码
+    text_protect = np.zeros((top_height, result.shape[1]), dtype=np.uint8)
+    
+    # 只保护看起来像文字的区域（基于大小和宽高比）
+    for contour in text_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = w / float(h) if h > 0 else 0
+        area = w * h
+        
+        # 文字特征：适当的大小和宽高比
+        if (area > 20 and area < 1000 and  # 不太大也不太小
+            0.1 < aspect_ratio < 10):  # 合理的宽高比
+            cv2.drawContours(text_protect, [contour], -1, 255, -1)
+    
+    # 对非文字区域进行阈值处理
+    _, top_mask = cv2.threshold(gray[:top_height, :], 200, 255, cv2.THRESH_BINARY_INV)
+    
+    # 从清理掩码中排除文字区域
+    top_mask = cv2.bitwise_and(top_mask, cv2.bitwise_not(text_protect))
+    
+    # 应用掩码（只清理非文字区域）
+    result_top = result[:top_height, :]
+    result_top[top_mask > 0] = 255
+    
+    # --- 强力清理底部污点（保留文字）---
+    bottom_height = int(result.shape[0] * 0.10)
+    
+    # 检测底部文字
+    text_thresh = cv2.adaptiveThreshold(gray[-bottom_height:, :], 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY_INV, 11, 2)
+    
+    text_contours, _ = cv2.findContours(text_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    text_protect = np.zeros((bottom_height, result.shape[1]), dtype=np.uint8)
+    
+    for contour in text_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = w / float(h) if h > 0 else 0
+        area = w * h
+        
+        if (area > 20 and area < 1000 and 0.1 < aspect_ratio < 10):
+            cv2.drawContours(text_protect, [contour], -1, 255, -1)
+    
+    _, bottom_mask = cv2.threshold(gray[-bottom_height:, :], 230, 255, cv2.THRESH_BINARY_INV)
+    bottom_mask = cv2.bitwise_and(bottom_mask, cv2.bitwise_not(text_protect))
+    
+    result_bottom = result[-bottom_height:, :]
+    result_bottom[bottom_mask > 0] = 255
+    
+    # --- 强力清理右侧污点（保留文字）---
+    right_width = int(result.shape[1] * 0.08)
+    
+    # 检测右侧文字
+    text_thresh = cv2.adaptiveThreshold(gray[:, -right_width:], 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                      cv2.THRESH_BINARY_INV, 11, 2)
+    
+    text_contours, _ = cv2.findContours(text_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    text_protect = np.zeros((result.shape[0], right_width), dtype=np.uint8)
+    
+    for contour in text_contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = w / float(h) if h > 0 else 0
+        area = w * h
+        
+        if (area > 20 and area < 1000 and 0.1 < aspect_ratio < 10):
+            cv2.drawContours(text_protect, [contour], -1, 255, -1)
+    
+    _, right_mask = cv2.threshold(gray[:, -right_width:], 230, 255, cv2.THRESH_BINARY_INV)
+    right_mask = cv2.bitwise_and(right_mask, cv2.bitwise_not(text_protect))
+    
+    result_right = result[:, -right_width:]
+    result_right[right_mask > 0] = 255
+
     return result
 
 def improved_deskew(image):
