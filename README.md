@@ -1,3 +1,4 @@
+```python document_cleaner.py input3.jpg -o output_fixed.jpg --aggressive-clean```
 # Image Processing Tool
 
 一个基于 Python 的图片批量处理工具，用于去除图片噪点和自动校正图片倾斜角度。
