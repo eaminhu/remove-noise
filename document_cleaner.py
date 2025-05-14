@@ -490,8 +490,15 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     
     # Determine output path
     if output_path is None:
+        # When batch processing, we want to keep original filenames
+        # For single file processing, add '_cleaned' suffix if not specified
         path_obj = Path(image_path)
-        output_path = str(path_obj.with_stem(path_obj.stem + '_cleaned'))
+        if image_index is not None:
+            # In batch mode, use original filename
+            output_path = str(path_obj)
+        else:
+            # In single file mode, add '_cleaned' suffix
+            output_path = str(path_obj.with_stem(path_obj.stem + '_cleaned'))
     
     # Calculate processing time
     end_time = time.time()
@@ -514,7 +521,7 @@ def batch_process_images(input_folder, output_folder=None, no_rotate=False, aggr
     
     Args:
         input_folder: Folder containing images to process
-        output_folder: Folder to save processed images (if None, will create a subfolder named 'cleaned')
+        output_folder: Folder to save processed images (if None, will create a folder named 'output')
         no_rotate: If True, skips rotation correction
         aggressive_clean: If True, uses more aggressive cleaning settings
         
@@ -526,9 +533,12 @@ def batch_process_images(input_folder, output_folder=None, no_rotate=False, aggr
     
     # Create output folder if not specified
     if output_folder is None:
-        output_folder = os.path.join(input_folder, 'cleaned')
+        # Create 'output' folder in the same directory as input_folder
+        parent_dir = os.path.dirname(os.path.abspath(input_folder))
+        output_folder = os.path.join(parent_dir, 'output')
     
     os.makedirs(output_folder, exist_ok=True)
+    print(f"将处理后的图片保存到: {output_folder}")
     
     # Get all image files
     image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp']
@@ -549,6 +559,7 @@ def batch_process_images(input_folder, output_folder=None, no_rotate=False, aggr
     
     # Process each image with progress bar
     for i, img_path in enumerate(tqdm(image_files, desc="正在处理图片")):
+        # Use the original filename without adding '_cleaned' suffix
         output_path = os.path.join(output_folder, img_path.name)
         try:
             # Pass image index and total count for progress reporting
@@ -584,7 +595,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="清理文档图片：移除斑点并修正倾斜")
     parser.add_argument("input", help="输入图片路径或包含图片的文件夹")
-    parser.add_argument("--output", "-o", help="输出路径或文件夹（可选）")
+    parser.add_argument("--output", "-o", help="输出路径或文件夹（可选，默认为'output'文件夹）")
     parser.add_argument("--batch", "-b", action="store_true", help="处理输入文件夹中的所有图片")
     parser.add_argument("--no-rotate", action="store_true", help="禁用旋转/倾斜校正")
     parser.add_argument("--aggressive-clean", action="store_true", help="使用更积极的污点和边缘清除")
