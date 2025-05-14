@@ -3,13 +3,9 @@ import numpy as np
 import os
 import time
 import math
-import pytesseract
 from scipy import ndimage
 from pathlib import Path
 from tqdm import tqdm
-
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
 
 def clean_document_image(image_path, output_path=None, no_rotate=False, aggressive_clean=False, image_index=None, total_images=None):
     """
@@ -78,29 +74,8 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     mask[:, w-side_margin:w] = 0  # Right border
     mask[h-bottom_margin:h, :] = 0  # Bottom border
     
-    # Detect and remove red areas (common in document stamps, marks, etc.)
-    print("检测并清除红色区域")
-    
-    # Split the image into its color channels
-    b, g, r = cv2.split(img)
-    
-    # Create a mask for red areas (where red channel is significantly higher than others)
-    red_mask = np.zeros_like(gray, dtype=np.uint8)
-    
-    # Red areas typically have high red channel and low blue/green channels
-    red_dominant = ((r > 150) & (r > g * 1.5) & (r > b * 1.5)).astype(np.uint8) * 255
-    
-    # Dilate the red mask to ensure complete coverage of red areas
-    red_kernel = np.ones((3, 3), np.uint8)
-    red_mask = cv2.dilate(red_dominant, red_kernel, iterations=1)
-    
-    # Add red areas to the border mask (marking them for removal)
-    mask = cv2.bitwise_and(mask, cv2.bitwise_not(red_mask))
-    
-    # Count red pixels for reporting
-    red_pixel_count = np.sum(red_mask > 0)
-    if red_pixel_count > 0:
-        print(f"检测到 {red_pixel_count} 个红色像素点需要清除")
+    # Note: Red area detection and removal has been disabled as requested
+    # We'll only focus on cleaning borders and enhancing text clarity
     
     # Also look for dark horizontal lines at the top which are common artifacts
     # Scan only the very top 5% of the image for horizontal lines to avoid removing text content
@@ -118,20 +93,19 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
             mask[0:min(extended_top_margin, int(h*0.05)), :] = 0  # Reduced scan area to 5%
             print(f"检测到水平线，扩展上边缘清理至: {extended_top_margin}px")
     
-    # Use a stronger sharpening to enhance text clarity while keeping processing fast
-    # This kernel provides better text definition without excessive processing
-    kernel = np.array([[0, -1, 0], [-1, 5.5, -1], [0, -1, 0]], np.float32)  # Enhanced sharpening kernel
+    # Preserve original text quality while only removing noise
+    # Use a very light sharpening to maintain text clarity without distortion
+    kernel = np.array([[0, -0.5, 0], [-0.5, 3.0, -0.5], [0, -0.5, 0]], np.float32)  # Light sharpening kernel
     sharpened = cv2.filter2D(gray, -1, kernel)
     
-    # Apply direct binary thresholding to preserve text edges
-    # Use Otsu's method to find the optimal threshold value automatically
-    _, otsu_thresh = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Apply Otsu's thresholding to identify definite text areas
+    _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Apply a very conservative adaptive threshold to maintain text quality
-    block_size = 11  # Very small block size to preserve fine details
+    # Apply adaptive thresholding with larger block size to avoid over-segmentation
+    block_size = 15  # Larger block size to avoid breaking up text
     adaptive_thresh = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-        cv2.THRESH_BINARY, block_size, 5  # Lower constant for better text preservation
+        cv2.THRESH_BINARY, block_size, 8  # Higher constant to preserve more of the original text
     )
     
     print("应用自适应阈值处理以增强文字内容")
@@ -151,141 +125,153 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     
     # Step 2: Skew detection and correction (only if not disabled)
     if not no_rotate:
-        # Function to check if image needs rotation (0, 90, 180, or 270 degrees) using OCR
+        # Enhanced function to check if image needs rotation (0, 90, 180, or 270 degrees)
         def detect_orientation(img):
-            # First try OCR-based orientation detection
-            try:
-                # Create copies of the image rotated in different orientations
-                img_original = img.copy()
-                img_90 = cv2.rotate(img.copy(), cv2.ROTATE_90_COUNTERCLOCKWISE)
-                img_180 = cv2.rotate(img.copy(), cv2.ROTATE_180)
-                img_270 = cv2.rotate(img.copy(), cv2.ROTATE_90_CLOCKWISE)
+            print("使用增强的线条和内容分析进行方向检测...")
+            
+            # First, analyze all four possible orientations
+            orientations = [
+                ("0度", img.copy()),
+                ("90度", cv2.rotate(img.copy(), cv2.ROTATE_90_COUNTERCLOCKWISE)),
+                ("180度", cv2.rotate(img.copy(), cv2.ROTATE_180)),
+                ("270度", cv2.rotate(img.copy(), cv2.ROTATE_90_CLOCKWISE))
+            ]
+            
+            # Function to analyze content distribution and line patterns
+            def analyze_orientation(image, name):
+                if len(image.shape) == 3:
+                    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                else:
+                    gray = image
                 
-                # Function to evaluate text detection confidence for each orientation
-                def get_ocr_confidence(image):
-                    # Convert to grayscale if not already
-                    if len(image.shape) == 3:
-                        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                # Apply adaptive threshold to enhance text and lines
+                binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                             cv2.THRESH_BINARY, 11, 2)
+                
+                # Find edges for line detection
+                edges = cv2.Canny(binary, 50, 150, apertureSize=3)
+                
+                # Detect lines
+                lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=80, maxLineGap=10)
+                
+                if lines is None or len(lines) < 5:
+                    return {"score": 0, "reason": "未检测到足够的线条"}
+                
+                h, w = gray.shape[:2]
+                
+                # Content distribution analysis
+                # Divide the image into a 4x4 grid and analyze black pixel distribution
+                grid_h, grid_w = h // 4, w // 4
+                grid_density = []
+                
+                for i in range(4):
+                    for j in range(4):
+                        roi = binary[i*grid_h:(i+1)*grid_h, j*grid_w:(j+1)*grid_w]
+                        black_pixels = np.sum(roi == 0)
+                        grid_density.append(black_pixels)
+                
+                # Calculate top vs bottom content ratio (for 180 degree detection)
+                top_content = sum(grid_density[:8])  # Top half
+                bottom_content = sum(grid_density[8:])  # Bottom half
+                
+                # Calculate left vs right content ratio (for 90/270 degree detection)
+                left_content = sum([grid_density[i] for i in range(16) if i % 4 < 2])
+                right_content = sum([grid_density[i] for i in range(16) if i % 4 >= 2])
+                
+                # Analyze lines
+                horizontal_lines = 0
+                vertical_lines = 0
+                diagonal_lines = 0
+                
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    # Calculate angle
+                    if x2 - x1 == 0:  # Vertical line
+                        angle = 90.0
                     else:
-                        gray = image
-                        
-                    # Apply threshold to make text more visible
-                    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                        angle = abs(math.degrees(math.atan2(y2 - y1, x2 - x1)))
                     
-                    # Get OCR data with confidence scores
-                    ocr_data = pytesseract.image_to_data(thresh, lang='chi_sim+eng', output_type=pytesseract.Output.DICT)
-                    
-                    # Calculate average confidence and text count
-                    confidences = [float(conf) for conf in ocr_data['conf'] if conf != '-1']
-                    text_count = len([word for word in ocr_data['text'] if len(word.strip()) > 1])
-                    
-                    # If no text is detected, return 0
-                    if not confidences or text_count == 0:
-                        return 0, 0
-                        
-                    avg_conf = sum(confidences) / len(confidences)
-                    return avg_conf, text_count
+                    # Categorize line direction
+                    if angle < 20 or angle > 160:
+                        horizontal_lines += 1
+                    elif 70 < angle < 110:
+                        vertical_lines += 1
+                    else:
+                        diagonal_lines += 1
                 
-                print("使用OCR检测文本方向...")
+                # Text-like pattern detection (more horizontal than vertical lines typically indicates text)
+                text_pattern_score = horizontal_lines - vertical_lines * 0.5
                 
-                # Get confidence scores for each orientation
-                conf_0, count_0 = get_ocr_confidence(img_original)
-                conf_90, count_90 = get_ocr_confidence(img_90)
-                conf_180, count_180 = get_ocr_confidence(img_180)
-                conf_270, count_270 = get_ocr_confidence(img_270)
+                # Calculate a score based on multiple factors
+                # 1. Text patterns (horizontal lines are good)
+                # 2. Content distribution (more on top is typical for documents)
+                # 3. Line alignment (regular spacing of horizontal lines)
                 
-                # Weight by both confidence and text count
-                score_0 = conf_0 * count_0 if count_0 > 0 else 0
-                score_90 = conf_90 * count_90 if count_90 > 0 else 0
-                score_180 = conf_180 * count_180 if count_180 > 0 else 0
-                score_270 = conf_270 * count_270 if count_270 > 0 else 0
+                # For normal orientation, we expect:
+                # - More content in top half than bottom half
+                # - More horizontal than vertical lines
+                # - Content well-distributed across the page width
                 
-                print(f"OCR方向检测结果 - 0°: {score_0:.1f}, 90°: {score_90:.1f}, 180°: {score_180:.1f}, 270°: {score_270:.1f}")
+                # Basic score from line patterns
+                score = text_pattern_score
                 
-                # Find the orientation with the highest score
-                scores = [score_0, score_90, score_180, score_270]
-                max_score = max(scores)
-                
-                # Only rotate if the best score is significantly better than original
-                if max_score > 0:
-                    best_orientation = scores.index(max_score) * 90
-                    
-                    # If original orientation score is close to the best, keep original
-                    if best_orientation != 0 and score_0 > 0 and max_score / score_0 < 1.3:
-                        print("原始方向与最佳方向相近，保持原始方向")
-                        return 0
-                        
-                    print(f"OCR检测到最佳文本方向为: {best_orientation}°")
-                    return best_orientation
-                    
-            except Exception as e:
-                print(f"OCR方向检测失败: {str(e)}，将使用备用方法")
-            
-            # Fallback to line-based orientation detection if OCR fails
-            print("使用线条分析进行备用方向检测...")
-            
-            # Look for horizontal and vertical lines to confirm document orientation
-            edges = cv2.Canny(img, 50, 150, apertureSize=3)
-            lines = cv2.HoughLinesP(edges, 1, np.pi/180, 100, minLineLength=100, maxLineGap=5)
-            
-            if lines is None or len(lines) < 5:
-                return 0  # Not enough lines to determine orientation reliably
-                
-            # For 180-degree detection, we'll check if most horizontal lines are in the bottom half
-            h, w = img.shape[:2]
-            top_half_lines = 0
-            bottom_half_lines = 0
-            left_half_lines = 0
-            right_half_lines = 0
-            
-            horizontal_angles = []
-            vertical_angles = []
-            upside_down_score = 0
-            
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                # Count lines in different regions of the image
-                if y1 < h/2 and y2 < h/2:
-                    top_half_lines += 1
-                if y1 > h/2 and y2 > h/2:
-                    bottom_half_lines += 1
-                if x1 < w/2 and x2 < w/2:
-                    left_half_lines += 1
-                if x1 > w/2 and x2 > w/2:
-                    right_half_lines += 1
-                    
-                # Calculate angle
-                if x2 - x1 == 0:  # Avoid division by zero
-                    angle = 90.0
+                # Adjust score based on content distribution
+                if top_content > bottom_content * 1.2:
+                    # Typical document has more content at top
+                    score += 20
+                    reason = "内容主要分布在上半部分，符合正常文档格式"
+                elif bottom_content > top_content * 1.2:
+                    # Upside down document has more content at bottom
+                    score -= 20
+                    reason = "内容主要分布在下半部分，可能是上下颠倒"
                 else:
-                    angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                    reason = "内容上下分布均衡"
                 
-                # Categorize lines as horizontal or vertical
-                if abs(angle) < 20 or abs(angle - 180) < 20 or abs(angle + 180) < 20:
-                    horizontal_angles.append(angle)
-                    # Check for upside-down text (most horizontal lines have negative slope)
-                    if abs(angle - 180) < 20 or abs(angle + 180) < 20:
-                        upside_down_score += 1
-                elif abs(angle - 90) < 20 or abs(angle + 90) < 20:
-                    vertical_angles.append(angle)
-            
-            # Detect 180-degree rotation (upside down)
-            if upside_down_score > len(horizontal_angles) * 0.5 and bottom_half_lines > top_half_lines * 1.2:
-                print("线条分析检测到图片可能是上下颠倒（180度旋转）")
-                return 180
+                # Adjust for left-right balance (for 90/270 detection)
+                lr_ratio = max(left_content, right_content) / (min(left_content, right_content) if min(left_content, right_content) > 0 else 1)
+                if lr_ratio > 2:
+                    # Very unbalanced left-right suggests incorrect orientation
+                    score -= 10
                 
-            # Detect 90-degree rotation
-            if len(vertical_angles) > len(horizontal_angles) * 1.5:
-                # Check if it's 90 or 270 degrees by comparing left/right content distribution
-                if right_half_lines > left_half_lines * 1.2:
-                    print("线条分析检测到图片需要旋转90度")
-                    return 90
-                else:
-                    print("线条分析检测到图片需要旋转270度")
-                    return 270
+                # Bonus for having a good ratio of horizontal to vertical lines (text-like)
+                if horizontal_lines > vertical_lines * 1.5:
+                    score += 15
+                    reason += ", 水平线条占主导，符合文本特征"
+                
+                return {
+                    "score": score,
+                    "h_lines": horizontal_lines,
+                    "v_lines": vertical_lines,
+                    "top_content": top_content,
+                    "bottom_content": bottom_content,
+                    "left_content": left_content,
+                    "right_content": right_content,
+                    "reason": reason
+                }
             
-            # No significant rotation detected
-            return 0
+            # Analyze each orientation
+            results = []
+            for name, img_orient in orientations:
+                result = analyze_orientation(img_orient, name)
+                result["orientation"] = name
+                result["angle"] = orientations.index((name, img_orient)) * 90
+                results.append(result)
+                print(f"方向 {name} 分数: {result['score']:.1f} - {result['reason']}")
+            
+            # Find the orientation with the highest score
+            best_result = max(results, key=lambda x: x["score"])
+            
+            # Only rotate if the best score is significantly better than original (0 degrees)
+            original_score = results[0]["score"]
+            best_score = best_result["score"]
+            
+            # If the best orientation is not 0 degrees and is significantly better
+            if best_result["angle"] != 0 and best_score > original_score + 15:
+                print(f"检测到最佳方向为 {best_result['orientation']}，分数为 {best_score:.1f}")
+                return best_result["angle"]
+            else:
+                print("保持原始方向，没有检测到显著需要旋转的情况")
+                return 0
         
         # Detect image orientation and rotate if needed
         rotation_angle = detect_orientation(processed)
@@ -480,24 +466,23 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     if content_mask.shape != (original_img.shape[0], original_img.shape[1]):
         content_mask = cv2.resize(content_mask, (original_img.shape[1], original_img.shape[0]))
     
-    # Additional check for any remaining red areas in the original image
-    # This ensures we catch any red marks that might have been missed earlier
-    b, g, r = cv2.split(original_img)
-    remaining_red = ((r > 150) & (r > g * 1.5) & (r > b * 1.5)).astype(np.uint8)
-    
-    # Remove remaining red areas from the content mask
-    content_mask = cv2.bitwise_and(content_mask, cv2.bitwise_not(remaining_red))
+    # Note: Red area detection and removal has been disabled as requested
     
     # Faster vectorized operation for color processing
-    # Create a darkening factor mask (0.65 = 35% darker) for better text clarity
-    darkening = np.ones_like(content_mask, dtype=np.float32) * 0.65
+    # No separate darkening mask needed - we'll use a much lighter approach directly in the channel processing
     
-    # Apply the mask to all channels at once (much faster)
+    # Use a simpler approach that preserves original text appearance
     for c in range(3):
         channel = original_img[:,:,c].astype(np.float32)
-        # Where content_mask is 1, use darkened original, else use white
+        
+        # Where content_mask is 1, use original pixel values with minimal darkening
+        # This preserves the original text appearance much better
+        # Use a very light darkening (0.85 = only 15% darker) to maintain text clarity
+        darkening_factor = 0.85  # Much lighter darkening to preserve text appearance
+        
+        # Apply the mask - use original pixels for text, white for background
         result_img[:,:,c] = np.where(content_mask == 1, 
-                                    (channel * darkening).astype(np.uint8), 
+                                    (channel * darkening_factor).astype(np.uint8), 
                                     255)
     
     # Convert back to grayscale for any remaining processing
