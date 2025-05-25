@@ -29,7 +29,7 @@ cd image-processing-tool
 2. 创建虚拟环境（推荐）：
 ```bash
 # Windows
-python -m venv venv
+python -m .venv venv
 .\venv\Scripts\activate
 
 # Linux/MacOS

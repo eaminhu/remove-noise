@@ -426,15 +426,29 @@ def enhanced_process_image(input_path, output_path, debug=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process document images')
-    parser.add_argument('input', help='Input image path')
-    parser.add_argument('--output', help='Output image path', default=None)
+    parser.add_argument('input', help='Input image path or folder')
+    parser.add_argument('--output', help='Output path or folder', default=None)
     parser.add_argument('--debug', help='Save debug images', action='store_true')
-    
+
     args = parser.parse_args()
-    
     input_path = args.input
-    output_path = args.output if args.output else f"processed_{os.path.basename(input_path)}"
-    
-    print(f"Processing {input_path}...")
-    result = enhanced_process_image(input_path, output_path, args.debug)
-    print(f"Processing complete. Result saved to {output_path}")
+    output_path = args.output
+
+    # 如果是文件夹就批量处理
+    if os.path.isdir(input_path):
+        output_folder = output_path if output_path else "output"
+        os.makedirs(output_folder, exist_ok=True)
+
+        for filename in os.listdir(input_path):
+            if filename.lower().endswith(('.jpg', '.png', '.jpeg', '.bmp', '.tiff')):
+                in_file = os.path.join(input_path, filename)
+                out_file = os.path.join(output_folder, f"processed_{filename}")
+                print(f"Processing {in_file}...")
+                enhanced_process_image(in_file, out_file, args.debug)
+                print(f"Saved to {out_file}")
+    else:
+        # 单张图片处理
+        output_file = output_path if output_path else f"processed_{os.path.basename(input_path)}"
+        print(f"Processing {input_path}...")
+        enhanced_process_image(input_path, output_file, args.debug)
+        print(f"Saved to {output_file}")

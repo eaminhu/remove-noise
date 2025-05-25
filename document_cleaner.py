@@ -94,32 +94,24 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
             print(f"检测到水平线，扩展上边缘清理至: {extended_top_margin}px")
     
     # Preserve original text quality while only removing noise
-    # Use a gentler sharpening to maintain text clarity without distortion
-    kernel = np.array([[0, -0.3, 0], [-0.3, 2.6, -0.3], [0, -0.3, 0]], np.float32)  # Gentler sharpening kernel
+    # Use a very light sharpening to maintain text clarity without distortion
+    kernel = np.array([[0, -0.5, 0], [-0.5, 3.0, -0.5], [0, -0.5, 0]], np.float32)  # Light sharpening kernel
     sharpened = cv2.filter2D(gray, -1, kernel)
     
     # Apply Otsu's thresholding to identify definite text areas
     _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    # Apply adaptive thresholding with optimized parameters for Chinese text
-    block_size = 25  # Much larger block size to preserve connected Chinese characters
+    # Apply adaptive thresholding with larger block size to avoid over-segmentation
+    block_size = 15  # Larger block size to avoid breaking up text
     adaptive_thresh = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, block_size, 8  # Adjusted constant for better text preservation
+        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
+        cv2.THRESH_BINARY, block_size, 8  # Higher constant to preserve more of the original text
     )
     
     print("应用自适应阈值处理以增强文字内容")
     
-    # Apply a more text-preserving approach for Chinese characters
-    # Bilateral filter with carefully tuned parameters for text edge preservation
-    bilateral = cv2.bilateralFilter(gray, 5, 50, 50)  # Smaller window, more conservative filtering
-    
-    # Use a more conservative threshold to preserve thin strokes in Chinese characters
-    _, bilateral_thresh = cv2.threshold(bilateral, 180, 255, cv2.THRESH_BINARY)
-    
-    # Combine the thresholding methods with priority to preserve text
-    # For Chinese text, we need to be more careful about preserving thin strokes
-    combined_thresh = cv2.bitwise_or(bilateral_thresh, adaptive_thresh)
+    # Combine the thresholding methods
+    combined_thresh = cv2.bitwise_or(otsu_thresh, adaptive_thresh)
     
     # Create a text mask to preserve original text quality
     # This identifies definite text areas that should be preserved
@@ -408,21 +400,22 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
         
         # Size threshold adjusted to be much smaller for potential text regions
         size_threshold = min_size
+        if at_border:
+            size_threshold = min_size * 3  # Reduced from 5x to 3x
+        if in_bottom_left:
+            size_threshold = min_size / 2  # Even smaller threshold for handwritten text area
             
-        # Enhanced spot detection with better stain handling
+        # Simplified and faster spot detection
         is_spot = False
         
         # Small isolated components are likely spots
-        if area < size_threshold and aspect_ratio < 1.8:
+        if area < size_threshold and aspect_ratio < 1.5:
             is_spot = True
         # Components at border that aren't too large
-        elif at_border and area < h * w * 0.003:  # Increased threshold to catch more border artifacts
+        elif at_border and area < h * w * 0.002:
             is_spot = True
         # Special case for bottom area spots (including red-boxed areas)
-        elif y > h * 0.7 and (area < 400 or (width > height * 2 and area < 600)):
-            is_spot = True
-        # Additional check for stains - stains often have irregular shapes and low density
-        elif area < 800 and density < 0.4 and aspect_ratio < 2.5:
+        elif y > h * 0.7 and (area < 300 or (width > height * 2 and area < 500)):
             is_spot = True
             
         if is_spot:
@@ -436,39 +429,12 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     # Remove the identified spots by setting them to white (255)
     cleaned = cv2.bitwise_or(rotated, spots_mask)
     
-    # Final cleanup for any remaining thin lines or small spots - more effective but text-preserving
+    # Final cleanup for any remaining thin lines or small spots - more conservative
     if aggressive_clean:
-        # First identify definite text areas to protect them
-        # Use morphological operations only on non-text areas
-        
-        # Create a dilated text mask to protect text and surrounding areas
-        text_protect_mask = cv2.dilate(text_mask, np.ones((5, 5), np.uint8), iterations=1)
-        
-        # Create a copy for cleaning non-text areas
-        cleaned_nontext = cleaned.copy()
-        
-        # Apply stronger cleaning only to non-text areas
-        nontext_areas = cv2.bitwise_not(text_protect_mask)
-        cleaned_nontext = cv2.bitwise_and(cleaned_nontext, nontext_areas)
-        cleaned_nontext = cv2.medianBlur(cleaned_nontext, 5)  # Stronger blur for non-text
-        
-        # Merge back with original text areas
-        text_areas = cv2.bitwise_and(cleaned, text_protect_mask)
-        cleaned = cv2.bitwise_or(text_areas, cleaned_nontext)
-        
+        # Use morphological opening but with smaller kernel to preserve text
+        kernel = np.ones((2, 2), np.uint8)  # Using a 2x2 kernel for more effective cleaning
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
         print("应用积极清理模式，进行额外处理")
-    else:
-        # Even in non-aggressive mode, selectively clean non-text areas
-        text_protect_mask = cv2.dilate(text_mask, np.ones((3, 3), np.uint8), iterations=1)
-        nontext_areas = cv2.bitwise_not(text_protect_mask)
-        
-        # Apply light cleaning only to non-text areas
-        cleaned_nontext = cv2.bitwise_and(cleaned, nontext_areas)
-        cleaned_nontext = cv2.medianBlur(cleaned_nontext, 3)
-        
-        # Merge back with original text areas
-        text_areas = cv2.bitwise_and(cleaned, text_protect_mask)
-        cleaned = cv2.bitwise_or(text_areas, cleaned_nontext)
     
     # Simplified and faster bottom area cleanup
     bottom_mask = np.zeros_like(cleaned)
@@ -505,100 +471,18 @@ def clean_document_image(image_path, output_path=None, no_rotate=False, aggressi
     # Faster vectorized operation for color processing
     # No separate darkening mask needed - we'll use a much lighter approach directly in the channel processing
     
-    # Direct text extraction approach - no blurring or processing of text
-    # Start with a clean white background
-    result_img = np.ones_like(original_img) * 255
-    
-    # Create a mask that captures all text with minimal processing
-    # Use multiple thresholding methods to ensure we don't miss any text
-    
-    # Method 1: Direct binary threshold - good for clear, dark text
-    _, binary_mask = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
-    
-    # Method 2: Adaptive threshold - better for varying text darkness
-    adaptive_mask = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 15, 5
-    )
-    
-    # Method 3: Canny edge detection - good for text outlines
-    edges = cv2.Canny(gray, 100, 200)
-    dilated_edges = cv2.dilate(edges, np.ones((2,2), np.uint8), iterations=1)
-    
-    # Combine all methods to get comprehensive text mask
-    combined_text_mask = cv2.bitwise_or(binary_mask, adaptive_mask)
-    combined_text_mask = cv2.bitwise_or(combined_text_mask, dilated_edges)
-    
-    # Clean up the mask to remove noise while preserving text
-    # First close small gaps within characters
-    close_kernel = np.ones((2, 2), np.uint8)
-    text_mask = cv2.morphologyEx(combined_text_mask, cv2.MORPH_CLOSE, close_kernel)
-    
-    # Use connected component analysis for more precise text identification
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(text_mask, connectivity=8)
-    
-    # Create a refined text mask that only includes components likely to be text
-    refined_mask = np.zeros_like(text_mask)
-    
-    print(f"检测到 {num_labels-1} 个潜在文本区域")
-    text_count = 0
-    
-    # Skip background (label 0)
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        width = stats[i, cv2.CC_STAT_WIDTH]
-        height = stats[i, cv2.CC_STAT_HEIGHT]
-        x = stats[i, cv2.CC_STAT_LEFT]
-        y = stats[i, cv2.CC_STAT_TOP]
-        
-        # Calculate aspect ratio
-        aspect_ratio = max(width, height) / (min(width, height) if min(width, height) > 0 else 1)
-        
-        # Calculate density (percentage of black pixels)
-        component_mask = (labels == i).astype(np.uint8)
-        density = np.sum(component_mask) / (width * height) if width * height > 0 else 0
-        
-        # More precise text detection criteria
-        is_text = False
-        
-        # Chinese characters and punctuation
-        if (0.3 < aspect_ratio < 3.0) and area > 15 and area < 3000 and density > 0.2:
-            is_text = True
-        # Long horizontal text (like underlines or dashes)
-        elif width > height * 3 and width < w * 0.5 and area > 20 and area < 1000:
-            is_text = True
-        # Tall vertical text (like exclamation marks or vertical lines in characters)
-        elif height > width * 3 and height < h * 0.5 and area > 20 and area < 1000:
-            is_text = True
-            
-        # Exclude very small components that are likely noise
-        if area < 10:
-            is_text = False
-        # Exclude components at the very edge that are likely artifacts
-        if x <= 2 or y <= 2 or x + width >= w - 2 or y + height >= h - 2:
-            is_text = False
-            
-        if is_text:
-            # Add this component to the refined mask
-            component_mask = (labels == i).astype(np.uint8) * 255
-            refined_mask = cv2.bitwise_or(refined_mask, component_mask)
-            text_count += 1
-    
-    print(f"保留了 {text_count} 个文本区域")
-    
-    # Dilate the text mask slightly to ensure we capture all of the text edges
-    text_kernel = np.ones((2, 2), np.uint8)
-    dilated_text_mask = cv2.dilate(refined_mask, text_kernel, iterations=1)
-    
-    # Convert mask to 3-channel for processing
-    text_mask_3ch = cv2.cvtColor(dilated_text_mask, cv2.COLOR_GRAY2BGR)
-    
-    # DIRECT COPY approach - absolutely no modification of text pixels
-    # Where the mask is white (255), copy the EXACT original pixel values
-    # This ensures text is never blurry
+    # Use a simpler approach that preserves original text appearance
     for c in range(3):
-        result_img[:,:,c] = np.where(text_mask_3ch[:,:,c] > 0, 
-                                    original_img[:,:,c], 
+        channel = original_img[:,:,c].astype(np.float32)
+        
+        # Where content_mask is 1, use original pixel values with minimal darkening
+        # This preserves the original text appearance much better
+        # Use a very light darkening (0.85 = only 15% darker) to maintain text clarity
+        darkening_factor = 0.85  # Much lighter darkening to preserve text appearance
+        
+        # Apply the mask - use original pixels for text, white for background
+        result_img[:,:,c] = np.where(content_mask == 1, 
+                                    (channel * darkening_factor).astype(np.uint8), 
                                     255)
     
     # Convert back to grayscale for any remaining processing
